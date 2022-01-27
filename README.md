@@ -5,4 +5,5 @@ A simple CLI in Python that converts the Mary Hamilton project's personography X
 personography.xml ↦ agents.csv, relationships.csv
 
 ## Author
+
 Michael Falk
