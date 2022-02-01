@@ -52,9 +52,7 @@ def eval_to_str(expr:str, locals:Mapping) -> str:
     """Evaluates the given expression in the provided environment, and returns the output as a string"""
     xml_output = eval(expr, locals)
 
-    # Handle the output
     if isinstance(xml_output, list):
-        # Handle special cases: notes
         if f"{{{NS['tei']}}}note" in expr:
             return handle_note(xml_output)
         if f"{{{NS['tei']}}}ref" in expr:
@@ -62,7 +60,6 @@ def eval_to_str(expr:str, locals:Mapping) -> str:
         else:
             return CONCHAR.join([node.text for node in xml_output])
     elif isinstance(xml_output, etree._Element):
-        # Handle special cases: births and deaths
         if f"{{{NS['tei']}}}birth" in expr or f"{{{NS['tei']}}}death" in expr:
             return handle_date(xml_output)
         else:
@@ -70,7 +67,6 @@ def eval_to_str(expr:str, locals:Mapping) -> str:
     elif isinstance(xml_output, str):
         return xml_output
     else:
-        # Base case basically covers if the node query returns None
         return ""
 
 def handle_date(node:etree._Element) -> str:
@@ -80,7 +76,6 @@ def handle_date(node:etree._Element) -> str:
     if 'when' in att:
         return att['when']
     elif 'notBefore' in att or 'notAfter' in att:
-        # Heurist uses TPQ and TAQ for date ranges, with the meanings:
         # TPQ = Terminus Post Quem
         # TAQ = Terminus Ante Quem
         TPQ = att['notBefore'] if 'notBefore' in att else ''
@@ -95,12 +90,8 @@ def handle_note(notelist:list) -> str:
 
     def _format_note(note:etree._Element) -> str:
         """Extracts text from an individual note"""
-        # Use the .tostring method to get the raw xml from inside the note node,
-        # with the 'method' keyword argument to strip out the tags, then apply
-        # str.strip() to the output to remove all the extraneous whitespace
-        # Longer notes sometimes have line breaks, which interfere with the csv import. So replace
-        # these with <br/> elements (Heurist will render the html).
-        return etree.tostring(note, method='text', encoding='unicode').strip().replace('\n', '<br/>')
+        raw_string = etree.tostring(note, method='text', encoding='unicode') 
+        return raw_string.strip().replace('\n', '<br/>')
     
     def _format_type(note:etree._Element) -> str:
         """Extracts type of note if available, and appends a colon with space"""
@@ -136,6 +127,10 @@ def handle_relations(person:etree._Element, rel_dict:dict) -> dict:
         else:
             return "is" + name.title() + "Of"
 
+    def _strip_split(string:str) -> str:
+        """Removes # from string and splits on spaces"""
+        return string.replace("#","").split()
+
     if not relations:
         return rel_dict
     else:
@@ -145,27 +140,26 @@ def handle_relations(person:etree._Element, rel_dict:dict) -> dict:
                 continue
             else:
                 rel_type = _convert_rel_type(rel.attrib['name'])
-            # For undirected relationships, just grab them all. The combinations() function from 
-            # itertools automatically sorts each pair, so there is no possibility of accidentally
-            # creating two records for (src, tar) = rel_type and (tar, src) = rel_type.
+            # For undirected relationships, use combinations(). It sorts the pairs,
+            # so it will never create duplicates in rel_dict.
             if 'mutual' in rel.attrib:
-                for pair in combinations(rel.attrib['mutual'].split(), 2):
+                pairs = _strip_split(rel.attrib['mutual']) 
+                for pair in combinations(pairs, 2):
                     tmp_dict[pair] = rel_type
-            # The second case is directed relationships -- these require checking for duplicates
             elif 'active' in rel.attrib and 'passive' in rel.attrib:
-                # Both the 'active' and 'passive' attributes regularly contain a list of persons, seperated
-                # by whitespace. Use itertools.product to generate all the possible pairings
-                srcs, tars = rel.attrib['active'], rel.attrib['passive']
-                for src,tar in product(srcs.split(), tars.split()):
+                srcs, tars = _strip_split(rel.attrib['active']), _strip_split(rel.attrib['passive'])
+                for src,tar in product(srcs, tars):
                     # Check that the inverse relationship isn't already recorded
-                    if (tar,src) in rel_dict:
-                        continue
-                    else:
+                    if not (tar,src) in rel_dict:
                         tmp_dict[(src, tar)] = rel_type
     
     # Nice way to create new dict by merging two existing dicts in Python 3.9+
     return rel_dict | tmp_dict
 
+def get_rel_dict_rows(rel_dict:dict) -> Generator:
+    """Converts dict of relationships into a generator of rows that can be passed to
+    a csv.DictWriter"""
+    return ({'Source':src, 'Target':tar, 'Relationship Type':val} for (src,tar),val in rel_dict.items())
 
 def convertXML(tree:etree._ElementTree) -> None:
     """Converts Mary Hamilton Personography.xml into Heurist csv"""
@@ -191,9 +185,7 @@ def convertXML(tree:etree._ElementTree) -> None:
             # Handle relations
             rel_dict = handle_relations(person, rel_dict)
         
-        # To pass rel_dict to .writrows(), we need to transform it from a dict into a list of dicts:
-        # {(src,tar):rel_type} |--> [{'Source':src,'Target':tar,'Relationship Type':rel_type}]
-        rel_writer.writerows([{'Source':key[0], 'Target':key[1], 'Relationship Type':val} for key,val in rel_dict.items()])
+        rel_writer.writerows(get_rel_dict_rows(rel_dict))
 
 if __name__ == "__main__":
     with open(INPUT, mode="rb") as file:
